@@ -47,6 +47,8 @@ bool current_mouse_wheel_amount = DEFAULT_MOUSE_WHEEL_AMOUNT;
 
 bool exclusive_mode = false;
 
+bool current_radial_aim = false;
+
 typedef struct _controller_fd
 {
     struct _controller_fd *next;
@@ -90,6 +92,19 @@ void state_init()
     current_state.absolute_center_y = 512;   // center of virtual 1024 height
     current_state.absolute_step = 350;
     current_state.absolute_deadzone = 3;
+
+    // radial aim defaults (virtual coordinate space)
+    current_state.radial_radius   = 350;      // feels similar to existing absolute_step
+    current_state.radial_deadzone = 6000;     // stick magnitude threshold
+    current_state.mouse_virtual_x = current_state.absolute_center_x;
+    current_state.mouse_virtual_y = current_state.absolute_center_y;
+    current_state.mouse_pos_valid = false;
+
+    // radial limit defaults
+    current_state.radial_limit_enabled = false;
+    current_state.radial_limit_radius  = 0;
+    current_state.radial_offset_x = 0;
+    current_state.radial_offset_y = 0;
 
     controller_fds = NULL;
 
@@ -372,7 +387,11 @@ void state_update()
     }
 
     // We don't need to rest absolute values only relative movement
-    if (!current_left_analog_as_mouse && !current_right_analog_as_mouse)
+    bool radial_blocks_relative =
+        current_radial_aim && !current_state.radial_limit_enabled;
+
+    if ((!current_left_analog_as_mouse && !current_right_analog_as_mouse) ||
+        radial_blocks_relative)
     {
         current_state.mouse_relative_x = 0;
         current_state.mouse_relative_y = 0;
@@ -399,6 +418,10 @@ void state_change_update()
     const char *found_charset = NULL;
     const char *found_wordset = NULL;
 
+    bool new_radial_aim = false;
+    bool new_radial_limit_enabled = false;
+    int  new_radial_limit_radius = current_state.radial_limit_radius; // keep previous as default
+
     // check temp stacks
     int order_id = config_temp_stack_order_id;
     while (order_id > 0)
@@ -422,6 +445,20 @@ void state_change_update()
             {
                 found_mouse_wheel_amount = true;
                 current_mouse_wheel_amount = current->mouse_wheel_amount;
+            }
+
+            if (current->radial_aim)
+            {
+                new_radial_aim = true;
+            }
+
+            if (current->radial_limit_enabled)
+            {
+                new_radial_limit_enabled = true;
+                if (current->radial_limit_radius > 0)
+                {
+                    new_radial_limit_radius = current->radial_limit_radius;
+                }
             }
 
             if (NOT_FOUND_INPUT_SETS)
@@ -483,6 +520,18 @@ void state_change_update()
         {
             found_mouse_wheel_amount = true;
             current_mouse_wheel_amount = current->mouse_wheel_amount;
+        }
+
+        if (current->radial_aim)
+        {
+            new_radial_aim = true;
+        }
+
+        if (current->radial_limit_enabled) {
+            new_radial_limit_enabled = true;
+            if (current->radial_limit_radius > 0) {
+                new_radial_limit_radius = current->radial_limit_radius;
+            }
         }
 
         if (NOT_FOUND_INPUT_SETS)
@@ -564,6 +613,16 @@ void state_change_update()
 
     if (!found_right_analog_as_absolute_mouse)
         current_right_analog_as_absolute_mouse = false;
+
+    current_radial_aim = new_radial_aim;
+    current_state.radial_limit_enabled = new_radial_limit_enabled;
+    current_state.radial_limit_radius  = new_radial_limit_radius;
+    GPTK2_DEBUG(
+        "[STATE] radial_aim=%d radial_limit_enabled=%d radial_limit_radius=%d\n",
+        current_radial_aim,
+        current_state.radial_limit_enabled,
+        current_state.radial_limit_radius
+    );
 }
 
 

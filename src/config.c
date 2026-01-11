@@ -238,6 +238,7 @@ void config_init()
     gptokeyb_config_depth = 0;
 
     root_config->mouse_wheel_amount = DEFAULT_MOUSE_WHEEL_AMOUNT;
+    root_config->radial_aim = false;
 
     config_stack[0] = root_config;
 
@@ -353,6 +354,12 @@ void config_dump()
         if (current->exclusive_mode != EXL_FALSE)
         {
             printf("exclusive = %s\n", exl_names[current->exclusive_mode]);
+        }
+
+        if (current->radial_aim)
+        {
+            printf("radial_aim = true\n");
+            need_newline = true;
         }
 
         for (int btn=0; btn < GBTN_MAX; btn++)
@@ -514,6 +521,7 @@ void config_overlay_clear(gptokeyb_config *current)
     current->right_analog_as_absolute_mouse = MOUSE_MOVEMENT_OFF;
     current->exclusive_mode = EXL_FALSE;
     current->mouse_wheel_amount = DEFAULT_MOUSE_WHEEL_AMOUNT;
+    current->radial_aim = false;
 
     for (int btn=0; btn < GBTN_MAX; btn++)
     {
@@ -535,6 +543,7 @@ void config_overlay_parent(gptokeyb_config *current)
     current->right_analog_as_absolute_mouse = MOUSE_MOVEMENT_PARENT;
     current->exclusive_mode = EXL_PARENT;
     current->mouse_wheel_amount = 0;
+    current->radial_aim = false;
 
     for (int btn=0; btn < GBTN_MAX; btn++)
     {
@@ -571,6 +580,7 @@ void config_overlay_named(gptokeyb_config *current, const char *name)
 
     current->exclusive_mode        = other->exclusive_mode;
     current->mouse_wheel_amount    = other->mouse_wheel_amount;
+    current->radial_aim            = other->radial_aim;
 
     for (int btn=0; btn < GBTN_MAX; btn++)
     {
@@ -1498,6 +1508,19 @@ static int config_ini_handler(
 
             else
                 config->current_config->exclusive_mode = EXL_FALSE;
+        }
+        else if (strcasecmp(name, "radial_aim") == 0)
+        {
+            config->current_config->radial_aim = atob_default(token, false);
+        }
+        else if (strcasecmp(name, "radial_limit_enabled") == 0)
+        {
+            config->current_config->radial_limit_enabled = atob_default(value, false);
+        }
+
+        else if (strcasecmp(name, "radial_limit_radius") == 0)
+        {
+            config->current_config->radial_limit_radius = atoi_between(value, 1, 32768, 400);
         }
         else
         {

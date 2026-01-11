@@ -272,6 +272,11 @@ struct _gptokeyb_config
     // Amount to scroll the wheel, 0 means parent amount or default.
     Uint32 mouse_wheel_amount;
 
+    bool radial_aim;
+
+    bool radial_limit_enabled;
+    int  radial_limit_radius;
+
     bool map_check;
     gptokeyb_button button[GBTN_MAX];
 };
@@ -333,6 +338,19 @@ typedef struct
     Uint64 mouse_delay;
     Uint64 repeat_delay;
     Uint64 repeat_rate;
+
+    // --- radial aim / mouse tracking ---
+    int  mouse_virtual_x;   // last absolute mouse position (virtual coords)
+    int  mouse_virtual_y;
+    bool mouse_pos_valid;
+
+    int  radial_radius;     // radius in virtual coords around absolute_center
+    int  radial_deadzone;   // analog deadzone length (0..32767-ish)
+
+    bool radial_limit_enabled;
+    int  radial_limit_radius;
+    int  radial_offset_x;
+    int  radial_offset_y;
 } gptokeyb_state;
 
 
@@ -403,6 +421,7 @@ extern bool current_right_analog_as_mouse;
 extern bool current_mouse_wheel_amount;
 extern bool current_left_analog_as_absolute_mouse;
 extern bool current_right_analog_as_absolute_mouse;
+extern bool current_radial_aim;
 
 // fds for emulated devices
 extern int xbox_uinp_fd; // fake xbox controller

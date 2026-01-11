@@ -38,6 +38,7 @@
 #include "gptokeyb2.h"
 #include <linux/uinput.h>
 #include <stdbool.h>
+#include <math.h>   // for sqrtf in radial aim
 
 #define MAX_PROCESS_NAME 64
 
@@ -65,6 +66,81 @@ char kill_process_name[MAX_PROCESS_NAME] = "";
 
 gptokeyb_config *default_config=NULL;
 
+// --- radial aim state (local to main.c) ---
+static bool radial_mode_active   = false;
+
+static bool radial_center_calibrated = false;
+
+// did we "capture" a bounded radial position inside the circle?
+static bool radial_pos_active = false;
+
+// last known virtual cursor position when entering radial mode
+static int radial_saved_x = 0;
+static int radial_saved_y = 0;
+
+// Centre of the radial clamp in 1280x1024 virtual space
+static int radial_center_x = 640;
+static int radial_center_y = 512;
+
+static void radial_calibrate_center(void)
+{
+    if (radial_center_calibrated)
+        return;
+
+    // Use config's absolute centre as the clamp centre in virtual space
+    radial_center_x = current_state.absolute_center_x;
+    radial_center_y = current_state.absolute_center_y;
+
+    GPTK2_DEBUG(
+        "[RADIAL] calibrate center to virt=(%d,%d)\n",
+        radial_center_x,
+        radial_center_y
+    );
+
+    // *** ONE-TIME warp at startup ***
+    emitAbsoluteMouseMotion(radial_center_x, radial_center_y);
+
+    radial_center_calibrated = true;
+}
+
+// Map left stick to a circle around absolute_center
+static void radial_update_from_left_stick(void)
+{
+    if (!current_radial_aim)
+        return;
+
+    int x = current_state.current_left_analog_x;  // -32768..32767
+    int y = current_state.current_left_analog_y;
+
+    long dx = x;
+    long dy = y;
+    long mag_sq = dx * dx + dy * dy;
+
+    if (mag_sq < (long)current_state.radial_deadzone * (long)current_state.radial_deadzone)
+    {
+        // Deadzone -> centre
+        emitAbsoluteMouseMotion(current_state.absolute_center_x,
+                                current_state.absolute_center_y);
+        return;
+    }
+
+    float fx = (float)x / 32767.0f;
+    float fy = (float)y / 32767.0f;
+
+    float len = sqrtf(fx * fx + fy * fy);
+    if (len < 0.0001f)
+        len = 1.0f;
+
+    fx /= len;
+    fy /= len;
+
+    int vx = current_state.absolute_center_x +
+             (int)(fx * current_state.radial_radius);
+    int vy = current_state.absolute_center_y +
+             (int)(fy * current_state.radial_radius);
+
+    emitAbsoluteMouseMotion(vx, vy);
+}
 
 
 int main(int argc, char* argv[])
@@ -360,6 +436,15 @@ int main(int argc, char* argv[])
     config_finalise();
     state_change_update();
 
+    // Initialise radial centre from config's absolute centre
+    radial_center_x = current_state.absolute_center_x;
+    radial_center_y = current_state.absolute_center_y;
+
+    // Initialise virtual mouse position to something sane
+    current_state.mouse_virtual_x = radial_center_x;
+    current_state.mouse_virtual_y = radial_center_y;
+    current_state.mouse_pos_valid = true;
+
     if (do_dump_config)
     {
         config_dump();
@@ -403,6 +488,9 @@ int main(int argc, char* argv[])
             // or setup the absolute position mouse just in case
             printf("Running in Fake Keyboard mode\n");
             setupFakeAbsoluteMouseDevice();
+
+            // --- one-time radial centre calibration ---
+            radial_calibrate_center();
         }
 
     }
@@ -433,9 +521,81 @@ int main(int argc, char* argv[])
 
         state_update();
 
-        if (current_state.mouse_relative_x != 0 ||
-            current_state.mouse_relative_y != 0 ||
-            current_dpad_as_mouse)
+        // Handle radial-aim mode transitions
+        if (current_radial_aim && !radial_mode_active)
+        {
+            radial_mode_active = true;
+
+            // Where do we think the mouse is right now (virtual coordinates)?
+            if (current_state.mouse_pos_valid)
+            {
+                radial_saved_x = current_state.mouse_virtual_x;
+                radial_saved_y = current_state.mouse_virtual_y;
+            }
+            else
+            {
+                // Fallback: assume center if we don't know
+                radial_saved_x = current_state.absolute_center_x;
+                radial_saved_y = current_state.absolute_center_y;
+            }
+
+            if (current_state.radial_limit_enabled && current_state.radial_limit_radius > 0)
+            {
+                int dx = radial_saved_x - current_state.absolute_center_x;
+                int dy = radial_saved_y - current_state.absolute_center_y;
+
+                float r     = sqrtf((float)dx * dx + (float)dy * dy);
+                float limit = (float)current_state.radial_limit_radius;
+
+                if (r <= limit)
+                {
+                    // Already inside circle: capture immediately, no warp
+                    current_state.radial_offset_x = dx;
+                    current_state.radial_offset_y = dy;
+                    radial_pos_active = true;
+                }
+                else
+                {
+                    // Outside circle: do NOT capture, do NOT warp
+                    radial_pos_active = false;
+                    current_state.radial_offset_x = 0;
+                    current_state.radial_offset_y = 0;
+                }
+            }
+            else
+            {
+                // classic radial mode or no limit
+                current_state.mouse_absolute_x = 0;
+                current_state.mouse_absolute_y = 0;
+                radial_pos_active = false;
+                current_state.radial_offset_x = 0;
+                current_state.radial_offset_y = 0;
+            }
+        }
+        else if (!current_radial_aim && radial_mode_active)
+        {
+            // We just left radial mode
+            radial_mode_active = false;
+            radial_pos_active = false;
+
+            current_state.mouse_absolute_x = 0;
+            current_state.mouse_absolute_y = 0;
+        }
+
+        // Allow relative moves:
+        // - always when not in radial aim
+        // - OR when we are in radial aim but using bounded-relative mode
+        bool want_relative_mouse =
+            (!current_radial_aim &&
+             (current_state.mouse_relative_x != 0 ||
+              current_state.mouse_relative_y != 0)) ||
+            (current_radial_aim &&
+             current_state.radial_limit_enabled &&
+             (current_state.mouse_relative_x != 0 ||
+              current_state.mouse_relative_y != 0)) ||
+            current_dpad_as_mouse;
+
+        if (want_relative_mouse)
         {
             mouse_x = current_state.mouse_relative_x;
             mouse_y = current_state.mouse_relative_y;
@@ -462,15 +622,103 @@ int main(int argc, char* argv[])
                 mouse_y = (int)((float)(mouse_y) / slow_scale);
             }
 
-            emitRelativeMouseMotion(mouse_x, mouse_y);
+            // --- predict new virtual position for potential capture ---
+            int cand_vx, cand_vy;
 
-            if (mouse_x != 0 || mouse_y != 0) {
-                mouse_moved=true;
-                GPTK2_DEBUG("relative mouse move %d %d\n", mouse_x, mouse_y);
+            if (current_state.mouse_pos_valid)
+            {
+                cand_vx = current_state.mouse_virtual_x;
+                cand_vy = current_state.mouse_virtual_y;
+            }
+            else
+            {
+                cand_vx = current_state.absolute_center_x;
+                cand_vy = current_state.absolute_center_y;
+            }
+
+            cand_vx += mouse_x;
+            cand_vy += mouse_y;
+
+            if (current_radial_aim &&
+                current_state.radial_limit_enabled &&
+                current_state.radial_limit_radius > 0 &&
+                !radial_pos_active)
+            {
+                // We are in radial mode, bounded mode enabled, but NOT captured yet.
+                // Check if we have moved into the circle this frame.
+                int dx_c = cand_vx - current_state.absolute_center_x;
+                int dy_c = cand_vy - current_state.absolute_center_y;
+
+                float r     = sqrtf((float)dx_c * dx_c + (float)dy_c * dy_c);
+                float limit = (float)current_state.radial_limit_radius;
+
+                if (r <= limit)
+                {
+                    // We just crossed into the circle -> capture
+                    radial_pos_active = true;
+                    current_state.radial_offset_x = dx_c;
+                    current_state.radial_offset_y = dy_c;
+
+                    current_state.mouse_virtual_x = cand_vx;
+                    current_state.mouse_virtual_y = cand_vy;
+                    current_state.mouse_pos_valid = true;
+                }
+            }
+
+            if (current_radial_aim &&
+                current_state.radial_limit_enabled &&
+                current_state.radial_limit_radius > 0 &&
+                radial_pos_active)
+            {
+                // --- bounded radial mode: integrate in absolute space ---
+                int new_off_x = current_state.radial_offset_x + mouse_x;
+                int new_off_y = current_state.radial_offset_y + mouse_y;
+
+                float r     = sqrtf((float)new_off_x * new_off_x +
+                                  (float)new_off_y * new_off_y);
+                float limit = (float)current_state.radial_limit_radius;
+
+                if (r > limit && r > 0.0f)
+                {
+                  float scale = limit / r;
+                  new_off_x = (int)(new_off_x * scale);
+                  new_off_y = (int)(new_off_y * scale);
+                }
+
+                current_state.radial_offset_x = new_off_x;
+                current_state.radial_offset_y = new_off_y;
+
+                int abs_x = current_state.absolute_center_x + new_off_x;
+                int abs_y = current_state.absolute_center_y + new_off_y;
+
+                emitAbsoluteMouseMotion(abs_x, abs_y);
+
+                if (mouse_x != 0 || mouse_y != 0)
+                  mouse_moved = true;
+            }
+            else
+            {
+                // Normal behaviour: still outside circle, or radial_limit disabled
+                emitRelativeMouseMotion(mouse_x, mouse_y);
+
+                if (mouse_x != 0 || mouse_y != 0)
+                {
+                  mouse_moved = true;
+                  GPTK2_DEBUG("relative mouse move %d %d\n", mouse_x, mouse_y);
+                }
             }
         }
 
-        if (current_state.mouse_absolute_x != 0 || current_state.mouse_absolute_y != 0)
+        // Radial-aim: left stick controls absolute cursor on a circle
+        // ONLY for classic radial mode (no bounded relative)
+        if (current_radial_aim && !current_state.radial_limit_enabled)
+        {
+            radial_update_from_left_stick();
+            mouse_moved = true;
+        }
+
+        if (!current_radial_aim &&
+            (current_state.mouse_absolute_x != 0 || current_state.mouse_absolute_y != 0))
         {
             if (current_state.absolute_rotate == 90) {
                 mouse_x = current_state.absolute_center_x + (current_state.absolute_step * -current_state.mouse_absolute_y / INT16_MAX);

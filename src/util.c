@@ -402,39 +402,86 @@ void emitAxisMotion(int code, int value)
 
 void emitRelativeMouseMotion(int x, int y)
 {
-    if (x != 0)
-    {
-        emit(kb_uinp_fd, EV_REL, REL_X, x);
-    }
-    if (y != 0)
-    {
-        emit(kb_uinp_fd, EV_REL, REL_Y, y);
-    }
-
+    // Track a virtual mouse position so radial mode knows where we are
     if (x != 0 || y != 0)
     {
-        emit(kb_uinp_fd, EV_SYN, SYN_REPORT, 0);
+        if (!current_state.mouse_pos_valid)
+        {
+            // First-time initialisation:
+            // 1) Assume logical centre as our origin in virtual space
+            current_state.mouse_virtual_x = current_state.absolute_center_x;
+            current_state.mouse_virtual_y = current_state.absolute_center_y;
+            current_state.mouse_pos_valid = true;
+
+            // 2) Warp the real cursor to the same logical centre
+            //    so virtual and real positions are aligned.
+            emitAbsoluteMouseMotion(
+                current_state.mouse_virtual_x,
+                current_state.mouse_virtual_y
+            );
+        }
+
+        // Update virtual position in the same "virtual 1280x1024" space
+        current_state.mouse_virtual_x += x;
+        current_state.mouse_virtual_y += y;
+
+        // Clamp to the virtual space used by emitAbsoluteMouseMotion()
+        if (current_state.mouse_virtual_x < 0)
+            current_state.mouse_virtual_x = 0;
+        else if (current_state.mouse_virtual_x > 1280)
+            current_state.mouse_virtual_x = 1280;
+
+        if (current_state.mouse_virtual_y < 0)
+            current_state.mouse_virtual_y = 0;
+        else if (current_state.mouse_virtual_y > 1024)
+            current_state.mouse_virtual_y = 1024;
     }
+
+    if (x != 0)
+        emit(kb_uinp_fd, EV_REL, REL_X, x);
+    if (y != 0)
+        emit(kb_uinp_fd, EV_REL, REL_Y, y);
+
+    if (x != 0 || y != 0)
+        emit(kb_uinp_fd, EV_SYN, SYN_REPORT, 0);
 }
 
 void emitAbsoluteMouseMotion(int x, int y)
 {
+    GPTK2_DEBUG(
+        "[ABS] request: virt=(%d,%d) screen_w=%d screen_h=%d\n",
+        x,
+        y,
+        current_state.absolute_screen_width,
+        current_state.absolute_screen_height
+    );
+
     static int last_sent_x = -1, last_sent_y = -1;
 
-    // Scale from virtual 1280x1024 coordinate space to actual screen dimensions
-    // This maintains backwards compatibility with existing configs
-    int scaled_x = (x * current_state.absolute_screen_width) / 1280;
+    // Virtual space 0..1280 x 0..1024
+    if (x < 0)    x = 0;
+    if (x > 1280) x = 1280;
+    if (y < 0)    y = 0;
+    if (y > 1024) y = 1024;
+
+    // Keep virtual mouse in sync
+    current_state.mouse_virtual_x = x;
+    current_state.mouse_virtual_y = y;
+    current_state.mouse_pos_valid = true;
+
+    // Scale from virtual to actual screen dimensions
+    int scaled_x = (x * current_state.absolute_screen_width)  / 1280;
     int scaled_y = (y * current_state.absolute_screen_height) / 1024;
 
-    // Clamp to screen bounds
+    // Clamp to screen
     if (scaled_x < 0) scaled_x = 0;
-    if (scaled_x > current_state.absolute_screen_width) scaled_x = current_state.absolute_screen_width;
+    if (scaled_x > current_state.absolute_screen_width)
+        scaled_x = current_state.absolute_screen_width;
     if (scaled_y < 0) scaled_y = 0;
-    if (scaled_y > current_state.absolute_screen_height) scaled_y = current_state.absolute_screen_height;
+    if (scaled_y > current_state.absolute_screen_height)
+        scaled_y = current_state.absolute_screen_height;
 
-    // Force values to always differ from last sent value
-    // The kernel filters duplicate ABS values, which breaks apps that
-    // expect both axes in every event
+    // Avoid repeats
     if (scaled_x == last_sent_x) {
         scaled_x += (scaled_x < current_state.absolute_screen_width) ? 1 : -1;
     }
@@ -448,7 +495,14 @@ void emitAbsoluteMouseMotion(int x, int y)
     emit(abs_uinp_fd, EV_ABS, ABS_X, scaled_x);
     emit(abs_uinp_fd, EV_ABS, ABS_Y, scaled_y);
     emit(abs_uinp_fd, EV_SYN, SYN_REPORT, 0);
+
+    GPTK2_DEBUG(
+        "[ABS] emit: scaled=(%d,%d)\n",
+        scaled_x,
+        scaled_y
+    );
 }
+
 
 
 void emitMouseWheel(int wheel)

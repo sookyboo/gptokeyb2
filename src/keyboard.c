@@ -39,6 +39,15 @@
 #include <stdio.h>
 #include <string.h>
 
+static inline int axis_to_abs(int value, int max_coord)
+{
+    // SDL axis = [-32768, 32767] -> [0 .. max_coord]
+    // Use 65535 = 32768 + 32767 for full span.
+    int v = value + 32768;              // 0 .. 65535
+    long scaled = (long)v * max_coord;  // avoid overflow
+    return (int)(scaled / 65535);
+}
+
 void setupFakeAbsoluteMouseDevice()
 {
     struct uinput_user_dev device;
@@ -68,12 +77,12 @@ void setupFakeAbsoluteMouseDevice()
 
     // Use screen dimensions as ABS range
     device.absmin[ABS_X] = 0;
-    device.absmax[ABS_X] = current_state.absolute_screen_width;
+    device.absmax[ABS_X] = current_state.absolute_screen_width - 1;
     device.absfuzz[ABS_X] = 0;
     device.absflat[ABS_X] = 0;
 
     device.absmin[ABS_Y] = 0;
-    device.absmax[ABS_Y] = current_state.absolute_screen_height;
+    device.absmax[ABS_Y] = current_state.absolute_screen_height - 1;
     device.absfuzz[ABS_Y] = 0;
     device.absflat[ABS_Y] = 0;
 
@@ -263,7 +272,7 @@ void handleEventAxisFakeKeyboardMouseDevice(const SDL_Event *event)
     } // switch (event->caxis.axis)
 
     // fake mouse
-    if (current_left_analog_as_mouse && left_axis_movement)
+    if ((!current_radial_aim || current_state.radial_limit_enabled) && current_left_analog_as_mouse && left_axis_movement)
     {
         deadzone_mouse_calc(
             &current_state.mouse_relative_x, &current_state.mouse_relative_y,
@@ -272,7 +281,7 @@ void handleEventAxisFakeKeyboardMouseDevice(const SDL_Event *event)
         // GPTK2_DEBUG("fake mouse %d %d\n", current_state.mouse_x, current_state.mouse_y);
 
     }
-    else if (current_right_analog_as_mouse && right_axis_movement)
+    else if ((!current_radial_aim || current_state.radial_limit_enabled) && current_right_analog_as_mouse && right_axis_movement)
     {
         deadzone_mouse_calc(
             &current_state.mouse_relative_x, &current_state.mouse_relative_y,
@@ -280,23 +289,27 @@ void handleEventAxisFakeKeyboardMouseDevice(const SDL_Event *event)
 
         // GPTK2_DEBUG("fake mouse %d %d\n", current_state.mouse_x, current_state.mouse_y);
     }
-    else if (current_left_analog_as_absolute_mouse && left_axis_movement)
-    {
-        current_state.mouse_absolute_x = current_state.current_left_analog_x;
-        current_state.mouse_absolute_y = current_state.current_left_analog_y;
-
-        //GPTK2_DEBUG("fake absolute mouse %d %d\n", current_state.mouse_absolute_x, current_state.mouse_absolute_y);
-    }
-    else if (current_right_analog_as_absolute_mouse && right_axis_movement)
-    {
-        current_state.mouse_absolute_x = current_state.current_right_analog_x;
-        current_state.mouse_absolute_y = current_state.current_right_analog_y;
-
-        //GPTK2_DEBUG("fake absolute mouse %d %d\n", current_state.mouse_absolute_x, current_state.mouse_absolute_y);
-    }
+else if (current_left_analog_as_absolute_mouse && left_axis_movement)
+{
+    current_state.mouse_absolute_x =
+        axis_to_abs(current_state.current_left_analog_x,
+                    current_state.absolute_screen_width - 1);
+    current_state.mouse_absolute_y =
+        axis_to_abs(current_state.current_left_analog_y,
+                    current_state.absolute_screen_height - 1);
+}
+else if (current_right_analog_as_absolute_mouse && right_axis_movement)
+{
+    current_state.mouse_absolute_x =
+        axis_to_abs(current_state.current_right_analog_x,
+                    current_state.absolute_screen_width - 1);
+    current_state.mouse_absolute_y =
+        axis_to_abs(current_state.current_right_analog_y,
+                    current_state.absolute_screen_height - 1);
+}
     else
     {
-        if (left_axis_movement)
+        if (left_axis_movement && !current_radial_aim)
         {
             update_button(GBTN_LEFT_ANALOG_UP,    _ANALOG_AXIS_NEG(current_state.current_left_analog_y, current_state.deadzone_y));
             update_button(GBTN_LEFT_ANALOG_DOWN,  _ANALOG_AXIS_POS(current_state.current_left_analog_y, current_state.deadzone_y));
