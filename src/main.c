@@ -140,6 +140,10 @@ static void radial_update_from_left_stick(void)
              (int)(fy * current_state.radial_radius);
 
     emitAbsoluteMouseMotion(vx, vy);
+
+    current_state.mouse_virtual_x = vx;
+    current_state.mouse_virtual_y = vy;
+    current_state.mouse_pos_valid = true;
 }
 
 
@@ -526,6 +530,12 @@ int main(int argc, char* argv[])
         {
             radial_mode_active = true;
 
+            // Clear any residual motion that might have been produced in the same frame as B
+            current_state.mouse_relative_x = 0;
+            current_state.mouse_relative_y = 0;
+            current_state.mouse_absolute_x = 0;
+            current_state.mouse_absolute_y = 0;
+
             // Where do we think the mouse is right now (virtual coordinates)?
             if (current_state.mouse_pos_valid)
             {
@@ -622,7 +632,36 @@ int main(int argc, char* argv[])
                 mouse_y = (int)((float)(mouse_y) / slow_scale);
             }
 
+            if (mouse_x != 0 || mouse_y != 0)
+                {
+                    if (!current_state.mouse_pos_valid)
+                    {
+                        current_state.mouse_virtual_x = current_state.absolute_center_x;
+                        current_state.mouse_virtual_y = current_state.absolute_center_y;
+                        current_state.mouse_pos_valid = true;
+                    }
+
+                    current_state.mouse_virtual_x += mouse_x;
+                    current_state.mouse_virtual_y += mouse_y;
+                }
+
+            // --- NEW: extra tiny deadzone in radial mode to remove stick noise jitter ---
+            if (current_radial_aim &&
+                current_state.radial_limit_enabled &&
+                current_state.radial_limit_radius > 0 &&
+                !radial_pos_active)
+            {
+                const int rel_deadzone = 2; // tweak to taste (1–3)
+                if (mouse_x > -rel_deadzone && mouse_x < rel_deadzone &&
+                    mouse_y > -rel_deadzone && mouse_y < rel_deadzone)
+                {
+                    mouse_x = 0;
+                    mouse_y = 0;
+                }
+            }
+
             // --- predict new virtual position for potential capture ---
+            // mouse_virtual_x/y already include the current frame's relative move
             int cand_vx, cand_vy;
 
             if (current_state.mouse_pos_valid)
@@ -635,9 +674,6 @@ int main(int argc, char* argv[])
                 cand_vx = current_state.absolute_center_x;
                 cand_vy = current_state.absolute_center_y;
             }
-
-            cand_vx += mouse_x;
-            cand_vy += mouse_y;
 
             if (current_radial_aim &&
                 current_state.radial_limit_enabled &&
@@ -693,12 +729,19 @@ int main(int argc, char* argv[])
 
                 emitAbsoluteMouseMotion(abs_x, abs_y);
 
+                // keep virtual position aligned with the absolute cursor
+                current_state.mouse_virtual_x = abs_x;
+                current_state.mouse_virtual_y = abs_y;
+                current_state.mouse_pos_valid = true;
+
+
                 if (mouse_x != 0 || mouse_y != 0)
                   mouse_moved = true;
             }
             else
             {
                 // Normal behaviour: still outside circle, or radial_limit disabled
+                // OR we just captured this frame (avoid double-applying the delta)
                 emitRelativeMouseMotion(mouse_x, mouse_y);
 
                 if (mouse_x != 0 || mouse_y != 0)
